@@ -1,0 +1,12 @@
+# OpenTelemetry instrumentation for Weaviate
+opentelemetry-instrumentation-weaviate
+
+# Weaviate client library
+weaviate-client>=3.0.0,<5.0.0
+
+# Optional: OpenTelemetry SDK for exporting traces
+opentelemetry-sdk~=1.31.1
+# Optional: OTLP exporter for sending traces to observability backends
+opentelemetry-exporter-otlp-proto-grpc~=1.31.1
+
+python-dotenv[cli]
