@@ -14,7 +14,8 @@ from opentelemetry.sdk.trace.export import BatchSpanProcessor, ConsoleSpanExport
 from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
 
 # Set up the tracer provider
-trace.set_tracer_provider(TracerProvider())
+tracer_provider = TracerProvider()
+trace.set_tracer_provider(tracer_provider)
 
 # Add OTLP exporter (reads from OTEL_EXPORTER_OTLP_ENDPOINT env var)
 otlp_exporter = OTLPSpanExporter(
@@ -22,12 +23,12 @@ otlp_exporter = OTLPSpanExporter(
     headers=()
 )
 otlp_processor = BatchSpanProcessor(otlp_exporter)
-trace.get_tracer_provider().add_span_processor(otlp_processor)
+tracer_provider.add_span_processor(otlp_processor)
 
 # Add console exporter to see traces in terminal as well
 console_exporter = ConsoleSpanExporter()
 console_processor = BatchSpanProcessor(console_exporter)
-trace.get_tracer_provider().add_span_processor(console_processor)
+tracer_provider.add_span_processor(console_processor)
 
 # Now instrument Weaviate
 WeaviateInstrumentor().instrument()
@@ -47,4 +48,4 @@ for obj in response.objects:
 client.close()
 
 # Ensure all spans are exported before exiting
-trace.get_tracer_provider().force_flush(timeout_millis=5000)
+tracer_provider.force_flush(timeout_millis=5000)

@@ -35,10 +35,10 @@ API
 ---
 """
 
-from typing import Collection
+from typing import Any, Collection, Dict, Optional
 from contextvars import ContextVar
 
-from wrapt import wrap_function_wrapper
+from wrapt import wrap_function_wrapper  # type: ignore
 
 from opentelemetry.instrumentation.weaviate.config import Config
 from opentelemetry.instrumentation.weaviate.version import __version__
@@ -55,20 +55,20 @@ from opentelemetry.semconv.schemas import Schemas
 
 from .utils import dont_throw, parse_url_to_host_port
 from opentelemetry.instrumentation.utils import unwrap
-from .mapping import CONNECTION_WRAPPING, SPAN_NAME_PREFIX, SPAN_WRAPPING
+from .mapping import SPAN_NAME_PREFIX, SPAN_WRAPPING  # type: ignore
 
 _instruments = ("weaviate-client >= 3.0.0, < 5",)
 
 
 # Context variable for passing connection info within operation call stacks
-_connection_host_context = ContextVar('weaviate_connection_host', default=None)
-_connection_port_context = ContextVar('weaviate_connection_port', default=None)
+_connection_host_context: ContextVar[Optional[str]] = ContextVar('weaviate_connection_host', default=None)
+_connection_port_context: ContextVar[Optional[int]] = ContextVar('weaviate_connection_port', default=None)
 
 
 class WeaviateInstrumentor(BaseInstrumentor):
     """An instrumentor for Weaviate's client library."""
 
-    def __init__(self, exception_logger=None):
+    def __init__(self, exception_logger: Optional[Any] = None) -> None:
         super().__init__()
         Config.exception_logger = exception_logger
 
@@ -76,7 +76,7 @@ class WeaviateInstrumentor(BaseInstrumentor):
         return _instruments
 
     @dont_throw
-    def _instrument(self, **kwargs):
+    def _instrument(self, **kwargs: Any) -> None:
         tracer_provider = kwargs.get("tracer_provider")
         tracer = get_tracer(
             __name__,
@@ -93,19 +93,19 @@ class WeaviateInstrumentor(BaseInstrumentor):
             wrapper=_WeaviateConnectionInjectionWrapper(tracer),
         )
 
-        for to_wrap in SPAN_WRAPPING:
+        for to_wrap in SPAN_WRAPPING:  # type: ignore
             wrap_function_wrapper(
-                module=to_wrap["module"],
-                name=to_wrap["name"],
-                wrapper=_WeaviateTraceInjectionWrapper(tracer, wrap_properties=to_wrap),
+                module=to_wrap["module"],  # type: ignore
+                name=to_wrap["name"],  # type: ignore
+                wrapper=_WeaviateTraceInjectionWrapper(tracer, wrap_properties=to_wrap),  # type: ignore
             )
 
-    def _uninstrument(self, **kwargs):
+    def _uninstrument(self, **kwargs: Any) -> None:
         # Uninstrumenting is not implemented in this example.
-        for to_unwrap in SPAN_WRAPPING:
+        for to_unwrap in SPAN_WRAPPING:  # type: ignore
             unwrap(
-                to_unwrap["module"],
-                to_unwrap["name"],
+                to_unwrap["module"],  # type: ignore
+                to_unwrap["name"],  # type: ignore
             )
 
 
@@ -118,8 +118,8 @@ class _WeaviateConnectionInjectionWrapper:
     def __init__(self, tracer: Tracer):
         self.tracer = tracer
 
-    def __call__(self, wrapped, instance, args, kwargs):
-        name = f"{SPAN_NAME_PREFIX}.{wrapped.__name__}"
+    def __call__(self, wrapped: Any, instance: Any, args: Any, kwargs: Any) -> Any:
+        name = f"{SPAN_NAME_PREFIX}.{getattr(wrapped, '__name__', 'unknown')}"
         with self.tracer.start_as_current_span(name) as span:
             # Extract connection details from args/kwargs
             connection_host = None
@@ -131,8 +131,10 @@ class _WeaviateConnectionInjectionWrapper:
                 connection_host, connection_port = parse_url_to_host_port(connection_url)
             _connection_host_context.set(connection_host)
             _connection_port_context.set(connection_port)
-            span.set_attribute(ServerAttributes.SERVER_ADDRESS, connection_host)
-            span.set_attribute(ServerAttributes.SERVER_PORT, connection_port)
+            if connection_host is not None:
+                span.set_attribute(ServerAttributes.SERVER_ADDRESS, connection_host)
+            if connection_port is not None:
+                span.set_attribute(ServerAttributes.SERVER_PORT, connection_port)
             return return_value
 
 class _WeaviateTraceInjectionWrapper:
@@ -141,21 +143,27 @@ class _WeaviateTraceInjectionWrapper:
     This is used to create spans for Weaviate operations.
     """
 
-    def __init__(self, tracer: Tracer, wrap_properties: dict[str, str] = {}):
+    def __init__(self, tracer: Tracer, wrap_properties: Optional[Dict[str, str]] = None) -> None:
         self.tracer = tracer
         self.wrap_properties = wrap_properties or {}
 
-    def __call__(self, wrapped, instance, args, kwargs):
+    def __call__(self, wrapped: Any, instance: Any, args: Any, kwargs: Any) -> Any:
         """
         Wraps the original function to inject tracing headers.
         """
-        name = f"{SPAN_NAME_PREFIX}.{wrapped.__name__}"        
+        name = f"{SPAN_NAME_PREFIX}.{getattr(wrapped, '__name__', 'unknown')}"        
         with self.tracer.start_as_current_span(name) as span:
             span.set_attribute(DbAttributes.DB_SYSTEM_NAME, "weaviate")
-            span.set_attribute(DbAttributes.DB_OPERATION_NAME, self.wrap_properties.get("span_name", wrapped.__name__))
+            operation_name = self.wrap_properties.get("span_name", getattr(wrapped, '__name__', 'unknown'))
+            span.set_attribute(DbAttributes.DB_OPERATION_NAME, operation_name)
             span.set_attribute(DbAttributes.DB_NAME, "TBD")  # Replace with actual DB name if available
-            span.set_attribute(ServerAttributes.SERVER_ADDRESS, _connection_host_context.get())
-            span.set_attribute(ServerAttributes.SERVER_PORT, _connection_port_context.get())
+            
+            connection_host = _connection_host_context.get()
+            connection_port = _connection_port_context.get()
+            if connection_host is not None:
+                span.set_attribute(ServerAttributes.SERVER_ADDRESS, connection_host)
+            if connection_port is not None:
+                span.set_attribute(ServerAttributes.SERVER_PORT, connection_port)
 
             return_value = wrapped(*args, **kwargs)
 

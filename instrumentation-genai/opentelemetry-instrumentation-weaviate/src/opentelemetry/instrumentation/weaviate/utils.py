@@ -13,23 +13,20 @@
 # limitations under the License.
 
 import logging
-import os
 import traceback
-from typing import Optional, Tuple
-
-from opentelemetry._events import Event
+from typing import Any, Callable, Optional, Tuple
 from urllib.parse import urlparse
 # TODO: get semconv for vector databases
 # from opentelemetry.semconv._incubating.attributes import gen_ai_attributes as GenAI
 
 logger = logging.getLogger(__name__)
 
-def dont_throw(func):
+def dont_throw(func: Callable[..., Any]) -> Callable[..., Any]:
     """
     Decorator that catches and logs exceptions, rather than re-raising them,
     to avoid interfering with user code if instrumentation fails.
     """
-    def wrapper(*args, **kwargs):
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
         try:
             return func(*args, **kwargs)
         except Exception as e:
