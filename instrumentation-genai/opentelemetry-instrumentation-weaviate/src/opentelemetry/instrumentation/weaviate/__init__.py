@@ -45,10 +45,14 @@ from opentelemetry.instrumentation.instrumentor import BaseInstrumentor
 from opentelemetry.trace import get_tracer, Tracer
 # from opentelemetry.metrics import get_meter
 # from opentelemetry._events import get_event_logger
-from opentelemetry.semconv.trace import SpanAttributes
+from opentelemetry.semconv._incubating.attributes import db_attributes as DbAttributes
 
 # Potentially not needed.
 from opentelemetry.semconv.schemas import Schemas
+
+from .utils import dont_throw
+from opentelemetry.instrumentation.utils import unwrap
+from .mapping import CONNECTION_WRAPPING, SPAN_NAME_PREFIX, SPAN_WRAPPING
 
 _instruments = ("weaviate-client >= 3.0.0, < 5",)
 
@@ -62,6 +66,7 @@ class WeaviateInstrumentor(BaseInstrumentor):
     def instrumentation_dependencies(self) -> Collection[str]:
         return _instruments
 
+    @dont_throw
     def _instrument(self, **kwargs):
         tracer_provider = kwargs.get("tracer_provider")
         tracer = get_tracer(
@@ -71,34 +76,58 @@ class WeaviateInstrumentor(BaseInstrumentor):
             schema_url=Schemas.V1_28_0.value,
         )
 
+        # see if I can overload the connection methods
+        
         wrap_function_wrapper(
-            module="weaviate.client",
-            name="WeaviateClient.graphql_raw_query",
-            wrapper=_WeaviateTraceInjectionWrapper(tracer),
+            module="weaviate",
+            name="WeaviateClient.__init__",
+            wrapper=_WeaviateConnectionInjectionWrapper(tracer),
         )
 
-        wrap_function_wrapper(
-            module="weaviate.collections.collections",
-            name="_Collections.get",
-            wrapper=_WeaviateTraceInjectionWrapper(tracer),
-        )
-
-    #     {
-    #     "module": "weaviate.collections.collections",
-    #     "object": "_Collections",
-    #     "method": "get",
-    #     "span_name": "db.weaviate.collections.get",
-    # },
+        for to_wrap in SPAN_WRAPPING:
+            wrap_function_wrapper(
+                module=to_wrap["module"],
+                name=to_wrap["name"],
+                wrapper=_WeaviateTraceInjectionWrapper(tracer),
+            )
 
     def _uninstrument(self, **kwargs):
         # Uninstrumenting is not implemented in this example.
-        pass
-        
+        for to_unwrap in SPAN_WRAPPING:
+            unwrap(
+                to_unwrap["module"],
+                to_unwrap["name"],
+            )
+
+
+class _WeaviateConnectionInjectionWrapper:
+    """
+    A wrapper that intercepts calls to weaviate connection methods to inject tracing headers.
+    This is used to create spans for Weaviate connection operations.
+    """
+
+    def __init__(self, tracer: Tracer):
+        self.tracer = tracer
+
+    def __call__(self, wrapped, instance, args, kwargs):
+        name = f"{SPAN_NAME_PREFIX}.{wrapped.__name__}"
+        with self.tracer.start_as_current_span(name) as span:
+            # Extract connection details from args/kwargs
+            if hasattr(instance, 'url') or 'url' in kwargs:
+                url = getattr(instance, 'url', kwargs.get('url', ''))
+                span.set_attribute(DbAttributes.DB_CONNECTION_STRING, url)
+            
+            if hasattr(instance, '_connection') and hasattr(instance._connection, 'url'):
+                span.set_attribute(DbAttributes.DB_CONNECTION_STRING, instance._connection.url)
+                
+            span.set_attribute(DbAttributes.DB_SYSTEM_NAME, "weaviate")
+            
+            return wrapped(*args, **kwargs)
 
 class _WeaviateTraceInjectionWrapper:
     """
-    A wrapper that intercepts calls to the underlying LLM code in LangChain
-    to inject W3C trace headers into upstream requests (if possible).
+    A wrapper that intercepts calls to weaviate to inject tracing headers.
+    This is used to create spans for Weaviate operations.
     """
 
     def __init__(self, tracer: Tracer):
@@ -108,11 +137,11 @@ class _WeaviateTraceInjectionWrapper:
         """
         Wraps the original function to inject tracing headers.
         """
-        name = f"{wrapped.__module__}.{wrapped.__name__}"
+        name = f"{SPAN_NAME_PREFIX}.{wrapped.__name__}"
         with self.tracer.start_as_current_span(name) as span:
-            span.set_attribute(SpanAttributes.DB_SYSTEM, "weaviate")
-            span.set_attribute(SpanAttributes.DB_OPERATION, "query")
-            span.set_attribute(SpanAttributes.DB_NAME, "TBD")  # Replace with actual DB name if available
+            span.set_attribute(DbAttributes.DB_SYSTEM_NAME, "weaviate")
+            span.set_attribute(DbAttributes.DB_OPERATION_NAME, "query")
+            span.set_attribute(DbAttributes.DB_NAME, "TBD")  # Replace with actual DB name if available
 
             return_value = wrapped(*args, **kwargs)
 

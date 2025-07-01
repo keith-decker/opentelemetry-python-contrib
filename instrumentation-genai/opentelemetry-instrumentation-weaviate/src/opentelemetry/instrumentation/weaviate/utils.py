@@ -32,11 +32,11 @@ def dont_throw(func):
             return func(*args, **kwargs)
         except Exception as e:
             logger.debug(
-                "OpenTelemetry instrumentation for LangChain encountered an error in %s: %s",
+                "OpenTelemetry instrumentation for Weaviate encountered an error in %s: %s",
                 func.__name__,
                 traceback.format_exc(),
             )
-            from opentelemetry.instrumentation.langchain.config import Config
+            from opentelemetry.instrumentation.weaviate.config import Config
             if Config.exception_logger:
                 Config.exception_logger(e)
             return None
