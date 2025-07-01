@@ -126,9 +126,13 @@ class _WeaviateConnectionInjectionWrapper:
             connection_port = None
       
             return_value = wrapped(*args, **kwargs)
-            connection_url = instance._connection.url if hasattr(instance, '_connection') else None
+            connection_url = None
+            if hasattr(instance, '_connection') and instance._connection is not None:
+                connection_url = instance._connection.url
             if connection_url:
                 connection_host, connection_port = parse_url_to_host_port(connection_url)
+            else:
+                connection_host, connection_port = None, None
             _connection_host_context.set(connection_host)
             _connection_port_context.set(connection_port)
             if connection_host is not None:
