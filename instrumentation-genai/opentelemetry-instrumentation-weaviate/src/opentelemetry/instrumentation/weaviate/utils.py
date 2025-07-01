@@ -15,8 +15,10 @@
 import logging
 import os
 import traceback
+from typing import Optional, Tuple
 
 from opentelemetry._events import Event
+from urllib.parse import urlparse
 # TODO: get semconv for vector databases
 # from opentelemetry.semconv._incubating.attributes import gen_ai_attributes as GenAI
 
@@ -42,3 +44,9 @@ def dont_throw(func):
             return None
     return wrapper
 
+
+def parse_url_to_host_port(url: str) -> Tuple[Optional[str], Optional[int]]:
+    parsed = urlparse(url)
+    host: Optional[str] = parsed.hostname
+    port: Optional[int] = parsed.port
+    return host, port
