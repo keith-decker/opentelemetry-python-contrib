@@ -111,5 +111,6 @@ SPAN_WRAPPING: list[dict[str, str]] = [
     {
         "module": "weaviate.connect.executor",
         "name": "execute",
+        "span_name": "connect.executor.execute",
     },
 ]

@@ -53,7 +53,7 @@ from opentelemetry.semconv._incubating.attributes import server_attributes as Se
 # Potentially not needed.
 from opentelemetry.semconv.schemas import Schemas
 
-from .utils import dont_throw, parse_url_to_host_port
+from .utils import dont_throw, parse_url_to_host_port, extract_db_operation_name
 from opentelemetry.instrumentation.utils import unwrap
 from .mapping import SPAN_NAME_PREFIX, SPAN_WRAPPING  # type: ignore
 
@@ -85,8 +85,8 @@ class WeaviateInstrumentor(BaseInstrumentor):
             schema_url=Schemas.V1_28_0.value,
         )
 
-        # see if I can overload the connection methods
-        
+        # Overload the init on the client to capture host and port
+        # and set them in the context for later use in spans.
         wrap_function_wrapper(
             module="weaviate",
             name="WeaviateClient.__init__",
@@ -158,7 +158,12 @@ class _WeaviateTraceInjectionWrapper:
         name = f"{SPAN_NAME_PREFIX}.{getattr(wrapped, '__name__', 'unknown')}"        
         with self.tracer.start_as_current_span(name) as span:
             span.set_attribute(DbAttributes.DB_SYSTEM_NAME, "weaviate")
-            operation_name = self.wrap_properties.get("span_name", getattr(wrapped, '__name__', 'unknown'))
+            
+            # Extract operation name dynamically from the function call
+            module_name = self.wrap_properties.get("module", "")
+            function_name = self.wrap_properties.get("name", "")
+            operation_name = extract_db_operation_name(wrapped, module_name, function_name)
+            
             span.set_attribute(DbAttributes.DB_OPERATION_NAME, operation_name)
             span.set_attribute(DbAttributes.DB_NAME, "TBD")  # Replace with actual DB name if available
             
