@@ -75,6 +75,11 @@ SPAN_WRAPPING: list[dict[str, str]] = [
     #     "span_name": "collections.query.fetch_object_by_id",
     # },
     {
+        "module": "weaviate.collections.queries.near_text.query",
+        "name": "_NearTextQuery.near_text",
+        "span_name": "collections.query.near_text",
+    },
+    {
         "module": "weaviate.collections.queries.fetch_objects.query",
         "name": "_FetchObjectsQuery.fetch_objects",
         "span_name": "collections.query.fetch_objects",

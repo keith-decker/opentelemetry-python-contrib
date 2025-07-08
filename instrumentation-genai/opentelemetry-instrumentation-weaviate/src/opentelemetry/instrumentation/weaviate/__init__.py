@@ -34,7 +34,7 @@ Usage
 API
 ---
 """
-
+import json
 from typing import Any, Collection, Dict, Optional
 from contextvars import ContextVar
 
@@ -53,9 +53,9 @@ from opentelemetry.semconv._incubating.attributes import server_attributes as Se
 # Potentially not needed.
 from opentelemetry.semconv.schemas import Schemas
 
-from .utils import dont_throw, parse_url_to_host_port, extract_db_operation_name
+from .utils import dont_throw, parse_url_to_host_port, extract_db_operation_name, extract_collection_name
 from opentelemetry.instrumentation.utils import unwrap
-from .mapping import SPAN_NAME_PREFIX, SPAN_WRAPPING  # type: ignore
+from .mapping import SPAN_NAME_PREFIX, SPAN_WRAPPING  
 
 _instruments = ("weaviate-client >= 3.0.0, < 5",)
 
@@ -75,7 +75,6 @@ class WeaviateInstrumentor(BaseInstrumentor):
     def instrumentation_dependencies(self) -> Collection[str]:
         return _instruments
 
-    @dont_throw
     def _instrument(self, **kwargs: Any) -> None:
         tracer_provider = kwargs.get("tracer_provider")
         tracer = get_tracer(
@@ -93,20 +92,25 @@ class WeaviateInstrumentor(BaseInstrumentor):
             wrapper=_WeaviateConnectionInjectionWrapper(tracer),
         )
 
-        for to_wrap in SPAN_WRAPPING:  # type: ignore
+        for to_wrap in SPAN_WRAPPING:  
             wrap_function_wrapper(
-                module=to_wrap["module"],  # type: ignore
-                name=to_wrap["name"],  # type: ignore
-                wrapper=_WeaviateTraceInjectionWrapper(tracer, wrap_properties=to_wrap),  # type: ignore
+                module=to_wrap["module"],  
+                name=to_wrap["name"],  
+                wrapper=_WeaviateTraceInjectionWrapper(tracer, wrap_properties=to_wrap),  
             )
 
     def _uninstrument(self, **kwargs: Any) -> None:
-        # Uninstrumenting is not implemented in this example.
-        for to_unwrap in SPAN_WRAPPING:  # type: ignore
+        for to_unwrap in SPAN_WRAPPING:  
             unwrap(
-                to_unwrap["module"],  # type: ignore
-                to_unwrap["name"],  # type: ignore
+                to_unwrap["module"],  
+                to_unwrap["name"],  
             )
+        
+        # unwrap the connection initialization to remove the context variable injection
+        unwrap(
+            "weaviate",
+            "WeaviateClient.__init__"
+        )
 
 
 class _WeaviateConnectionInjectionWrapper:
@@ -167,6 +171,12 @@ class _WeaviateTraceInjectionWrapper:
             span.set_attribute(DbAttributes.DB_OPERATION_NAME, operation_name)
             span.set_attribute(DbAttributes.DB_NAME, "TBD")  # Replace with actual DB name if available
             
+            # Extract collection name from the operation
+            collection_name = extract_collection_name(wrapped, instance, args, kwargs, module_name, function_name)
+            if collection_name:
+                # Use a Weaviate-specific collection attribute similar to MongoDB's DB_MONGODB_COLLECTION
+                span.set_attribute("db.weaviate.collection.name", collection_name)
+            
             connection_host = _connection_host_context.get()
             connection_port = _connection_port_context.get()
             if connection_host is not None:
@@ -176,4 +186,71 @@ class _WeaviateTraceInjectionWrapper:
 
             return_value = wrapped(*args, **kwargs)
 
+            # Extract documents from similarity search operations
+            if self._is_similarity_search():
+                documents = self._extract_documents_from_response(return_value)
+                if documents:
+                    span.set_attribute("db.weaviate.documents.count", len(documents))
+                    # emit the documents as events
+                    for doc in documents:
+                        # emit the document content as an event
+                        query = {}
+                        if 'query' in kwargs:
+                            query = json.dumps(kwargs['query'])
+                        span.add_event(
+                            "weaviate.document",
+                            attributes={
+                                "db.weaviate.document.content": json.dumps(doc.get("content", {})),
+                                "db.weaviate.document.distance": doc.get("distance", None),
+                                "db.weaviate.document.certainty": doc.get("certainty", None),
+                                "db.weaviate.document.score": doc.get("score", None),
+                                "db.weaviate.document.query": json.dumps(query),
+                            }
+                        )
+
+
         return return_value
+
+    def _is_similarity_search(self) -> bool:
+        """
+        Check if this is a similarity search operation.
+        """
+        module_name = self.wrap_properties.get("module", "")
+        function_name = self.wrap_properties.get("name", "")
+        return (
+            "query" in module_name.lower() or
+            "near_text" in function_name.lower() or
+            "fetch_objects" in function_name.lower() 
+        )
+    
+    def _extract_documents_from_response(self, response: Any) -> list[dict[str, Any]]:
+        """
+        Extract documents from weaviate response.
+        """
+        documents: list[dict[str, Any]] = []
+        try:
+            if hasattr(response, 'objects'):
+                for obj in response.objects:
+                    doc: dict[str, Any] = {}
+                    if hasattr(obj, 'properties'):
+                        doc['content'] = obj.properties
+                    
+                    # Extract similarity scores
+                    if hasattr(obj, 'metadata') and obj.metadata:
+                        metadata = obj.metadata
+                        if hasattr(metadata, 'distance'):
+                            doc['distance'] = metadata.distance
+                        if hasattr(metadata, 'certainty'):
+                            doc['certainty'] = metadata.certainty
+                        if hasattr(metadata, 'score'):
+                            doc['score'] = metadata.score
+                    
+                    documents.append(doc)
+            elif hasattr(response, 'data'):
+                # Handle GraphQL responses
+                pass
+        except Exception as e:
+            # silently handle extraction errors
+            pass
+        return documents
+    

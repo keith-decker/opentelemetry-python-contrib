@@ -100,3 +100,44 @@ def extract_db_operation_name(wrapped: Any, module_name: str, function_name: str
     
     # Ultimate fallback
     return 'exec'
+
+
+def extract_collection_name(wrapped: Any, instance: Any, args: Any, kwargs: Any, module_name: str, function_name: str) -> Optional[str]:
+    """
+    Extract collection name from Weaviate function calls.
+    
+    Args:
+        wrapped: The wrapped function
+        instance: The instance object (if any)
+        args: Function arguments
+        kwargs: Function keyword arguments
+        module_name: The module name from mapping
+        function_name: The function name from mapping
+        
+    Returns:
+        Collection name if found, None otherwise
+    """
+    collection_name = None
+    
+    try:
+        # Weaviate Client V4 stores this in the "request" attribute of the kwargs
+        if kwargs and 'request' in kwargs and hasattr(kwargs['request'], 'collection'):
+            collection_name = kwargs['request'].collection
+            
+        # Check if the instance has a collection attribute
+        # TODO: Check V3
+        elif hasattr(instance, '_collection'):
+            if hasattr(instance._collection, '_name'):
+                collection_name = instance._collection._name
+            elif hasattr(instance._collection, 'name'):
+                collection_name = instance._collection.name
+                
+        return collection_name
+        
+                
+    except Exception as e:
+        # Silently ignore any errors during extraction to avoid breaking the tracing
+
+        pass
+        
+    return None

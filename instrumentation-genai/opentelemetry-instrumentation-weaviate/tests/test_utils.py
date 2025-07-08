@@ -15,12 +15,14 @@
 """Tests for Weaviate utility functions."""
 
 import logging
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, PropertyMock, patch
 import pytest
 
 from opentelemetry.instrumentation.weaviate.utils import (
     dont_throw,
     parse_url_to_host_port,
+    extract_collection_name,
+    extract_db_operation_name,
 )
 from opentelemetry.instrumentation.weaviate.config import Config
 
@@ -291,6 +293,406 @@ class TestConfig:
         
         finally:
             Config.exception_logger = original_logger
+
+
+
+class TestExtractDbOperationName:
+    """Test the extract_db_operation_name function."""
+
+    def test_collections_create_operations(self):
+        """Test mapping of collection create operations."""
+        create_operations = [
+            ("create", "create"),
+            ("create_from_dict", "create"),
+            ("CREATE", "create"),
+            ("createCollection", "create"),
+        ]
+        
+        for function_name, expected in create_operations:
+            mock_wrapped = Mock()
+            mock_wrapped.__name__ = function_name
+            
+            result = extract_db_operation_name(
+                wrapped=mock_wrapped,
+                module_name="weaviate.collections.collections",
+                function_name=function_name
+            )
+            
+            assert result == expected
+
+    def test_collections_delete_operations(self):
+        """Test mapping of collection delete operations."""
+        delete_operations = [
+            ("delete", "delete"),
+            ("delete_all", "delete"),
+            ("DELETE", "delete"),
+            ("deleteCollection", "delete"),
+        ]
+        
+        for function_name, expected in delete_operations:
+            mock_wrapped = Mock()
+            mock_wrapped.__name__ = function_name
+            
+            result = extract_db_operation_name(
+                wrapped=mock_wrapped,
+                module_name="weaviate.collections.collections",
+                function_name=function_name
+            )
+            
+            assert result == expected
+
+    def test_collections_insert_operations(self):
+        """Test mapping of collection insert operations."""
+        insert_operations = [
+            ("insert", "insert"),
+            ("add_object", "insert"),
+            ("INSERT", "insert"),
+            ("insertObject", "insert"),  # contains 'insert'
+        ]
+        
+        for function_name, expected in insert_operations:
+            mock_wrapped = Mock()
+            mock_wrapped.__name__ = function_name
+            
+            result = extract_db_operation_name(
+                wrapped=mock_wrapped,
+                module_name="weaviate.collections.data",
+                function_name=function_name
+            )
+            
+            assert result == expected
+
+    def test_collections_update_operations(self):
+        """Test mapping of collection update operations."""
+        update_operations = [
+            ("update", "update"),
+            ("replace", "update"),
+            ("UPDATE", "update"),
+            ("replaceObject", "update"),
+        ]
+        
+        for function_name, expected in update_operations:
+            mock_wrapped = Mock()
+            mock_wrapped.__name__ = function_name
+            
+            result = extract_db_operation_name(
+                wrapped=mock_wrapped,
+                module_name="weaviate.collections.data",
+                function_name=function_name
+            )
+            
+            assert result == expected
+
+    def test_collections_select_operations(self):
+        """Test mapping of collection select operations."""
+        select_operations = [
+            ("get", "select"),
+            ("fetch", "select"),
+            ("query", "select"),
+            ("GET", "select"),
+            ("fetchObjects", "select"),
+        ]
+        
+        for function_name, expected in select_operations:
+            mock_wrapped = Mock()
+            mock_wrapped.__name__ = function_name
+            
+            result = extract_db_operation_name(
+                wrapped=mock_wrapped,
+                module_name="weaviate.collections.data",
+                function_name=function_name
+            )
+            
+            assert result == expected
+
+    def test_graphql_operations_default_to_select(self):
+        """Test that GraphQL operations default to select."""
+        graphql_modules = [
+            "weaviate.graphql.get",
+            "weaviate.gql.query",
+            "weaviate.GraphQL.execute",
+        ]
+        
+        for module_name in graphql_modules:
+            mock_wrapped = Mock()
+            mock_wrapped.__name__ = "execute"
+            
+            result = extract_db_operation_name(
+                wrapped=mock_wrapped,
+                module_name=module_name,
+                function_name="execute"
+            )
+            
+            assert result == "select"
+
+    def test_query_module_operations_default_to_select(self):
+        """Test that query module operations default to select."""
+        query_modules = [
+            "weaviate.query.aggregate",
+            "weaviate.Query.get",
+            "weaviate.QUERY.fetch",
+        ]
+        
+        for module_name in query_modules:
+            mock_wrapped = Mock()
+            mock_wrapped.__name__ = "execute"
+            
+            result = extract_db_operation_name(
+                wrapped=mock_wrapped,
+                module_name=module_name,
+                function_name="execute"
+            )
+            
+            assert result == "select"
+
+    def test_batch_operations_default_to_insert(self):
+        """Test that batch operations default to insert."""
+        batch_modules = [
+            "weaviate.batch.client",
+            "weaviate.Batch.add",
+            "weaviate.BATCH.execute",
+        ]
+        
+        for module_name in batch_modules:
+            mock_wrapped = Mock()
+            mock_wrapped.__name__ = "add_object"
+            
+            result = extract_db_operation_name(
+                wrapped=mock_wrapped,
+                module_name=module_name,
+                function_name="add_object"
+            )
+            
+            assert result == "insert"
+
+    def test_connect_executor_operations_default_to_exec(self):
+        """Test that connect/executor operations default to exec."""
+        exec_modules = [
+            "weaviate.connect.client",
+            "weaviate.executor.run",
+            "weaviate.Connect.execute",
+        ]
+        
+        for module_name in exec_modules:
+            mock_wrapped = Mock()
+            mock_wrapped.__name__ = "execute"
+            
+            result = extract_db_operation_name(
+                wrapped=mock_wrapped,
+                module_name=module_name,
+                function_name="execute"
+            )
+            
+            assert result == "exec"
+
+    def test_function_name_fallback_patterns(self):
+        """Test fallback to function name patterns when module doesn't match."""
+        fallback_cases = [
+            ("createSomething", "create"),
+            ("addNewItem", "create"),
+            ("newCollection", "create"),
+            ("deleteSomething", "delete"),
+            ("removeItem", "delete"),
+            ("dropTable", "delete"),
+            ("insertData", "insert"),
+            ("putObject", "insert"),
+            ("saveRecord", "insert"),
+            ("updateRecord", "update"),
+            ("modifyData", "update"),
+            ("replaceItem", "update"),
+            ("patchObject", "update"),
+            ("getSomething", "select"),
+            ("fetchData", "select"),
+            ("findRecord", "select"),
+            ("searchItems", "select"),
+            ("queryData", "select"),
+            ("selectAll", "select"),
+            ("readFile", "select"),
+        ]
+        
+        for function_name, expected in fallback_cases:
+            mock_wrapped = Mock()
+            mock_wrapped.__name__ = function_name
+            
+            result = extract_db_operation_name(
+                wrapped=mock_wrapped,
+                module_name="some.unknown.module",
+                function_name=function_name
+            )
+            
+            assert result == expected
+
+    def test_ultimate_fallback_to_exec(self):
+        """Test that unknown operations fall back to 'exec'."""
+        unknown_operations = [
+            "unknownOperation",
+            "someRandomFunction",
+            "doSomething",
+            "process",
+            "handle",
+        ]
+        
+        for function_name in unknown_operations:
+            mock_wrapped = Mock()
+            mock_wrapped.__name__ = function_name
+            
+            result = extract_db_operation_name(
+                wrapped=mock_wrapped,
+                module_name="some.unknown.module",
+                function_name=function_name
+            )
+            
+            assert result == "exec"
+
+    def test_wrapped_function_name_takes_precedence(self):
+        """Test that the wrapped function's __name__ takes precedence over function_name parameter."""
+        mock_wrapped = Mock()
+        mock_wrapped.__name__ = "actualCreate"
+        
+        result = extract_db_operation_name(
+            wrapped=mock_wrapped,
+            module_name="weaviate.collections.collections",
+            function_name="passedName"  # This should be ignored
+        )
+        
+        assert result == "create"
+
+    def test_missing_wrapped_name_uses_function_name_parameter(self):
+        """Test fallback to function_name parameter when wrapped.__name__ is not available."""
+        mock_wrapped = Mock(spec=[])  # No __name__ attribute
+        
+        result = extract_db_operation_name(
+            wrapped=mock_wrapped,
+            module_name="weaviate.collections.collections",
+            function_name="create"
+        )
+        
+        assert result == "create"
+
+    def test_case_insensitive_matching(self):
+        """Test that operation matching is case insensitive."""
+        case_variations = [
+            ("CREATE", "create"),
+            ("Create", "create"),
+            ("cReAtE", "create"),
+            ("DELETE", "delete"),
+            ("Delete", "delete"),
+            ("dElEtE", "delete"),
+            ("INSERT", "insert"),
+            ("Insert", "insert"),
+            ("iNsErT", "insert"),
+            ("UPDATE", "update"),
+            ("Update", "update"),
+            ("uPdAtE", "update"),
+            ("SELECT", "select"),
+            ("Select", "select"),
+            ("sElEcT", "select"),
+        ]
+        
+        for function_name, expected in case_variations:
+            mock_wrapped = Mock()
+            mock_wrapped.__name__ = function_name
+            
+            result = extract_db_operation_name(
+                wrapped=mock_wrapped,
+                module_name="weaviate.collections.collections",
+                function_name=function_name
+            )
+            
+            assert result == expected
+
+    def test_compound_function_names(self):
+        """Test function names with multiple operation indicators."""
+        compound_cases = [
+            ("createAndInsert", "create"),  # create takes precedence
+            ("updateOrReplace", "update"),  # update takes precedence
+            ("deleteAndRemove", "delete"),  # delete takes precedence
+            ("getAndFetch", "select"),     # get takes precedence
+        ]
+        
+        for function_name, expected in compound_cases:
+            mock_wrapped = Mock()
+            mock_wrapped.__name__ = function_name
+            
+            result = extract_db_operation_name(
+                wrapped=mock_wrapped,
+                module_name="some.module",
+                function_name=function_name
+            )
+            
+            assert result == expected
+
+    def test_module_name_case_insensitive(self):
+        """Test that some module name matching is case insensitive."""
+        # Note: collections module check is case-sensitive, others are case-insensitive
+        module_variations = [
+            # These work because the module checks use .lower()
+            ("weaviate.GRAPHQL.get", "execute", "select"),
+            ("weaviate.GraphQL.Get", "query", "select"),
+            ("weaviate.QUERY.aggregate", "run", "select"),
+            ("weaviate.Query.Aggregate", "execute", "select"),
+            ("weaviate.BATCH.client", "add_object", "insert"),
+            ("weaviate.Batch.Client", "insert_data", "insert"),
+            # These use lowercase collections (case-sensitive check)
+            ("weaviate.collections.data", "insert", "insert"),
+            ("weaviate.collections.data", "add_object", "insert"),
+        ]
+        
+        for module_name, function_name, expected in module_variations:
+            mock_wrapped = Mock()
+            mock_wrapped.__name__ = function_name
+            
+            result = extract_db_operation_name(
+                wrapped=mock_wrapped,
+                module_name=module_name,
+                function_name=function_name
+            )
+            
+            assert result == expected
+
+    def test_collections_module_case_sensitivity(self):
+        """Test that collections module check is case-sensitive."""
+        # The collections check is case-sensitive (should use lowercase)
+        test_cases = [
+            ("weaviate.collections.data", "add_object", "insert"),  # Lowercase works
+            ("weaviate.Collections.Data", "add_object", "create"),  # Uppercase falls back to general logic
+            ("weaviate.COLLECTIONS.data", "add_object", "create"),  # Uppercase falls back to general logic
+        ]
+        
+        for module_name, function_name, expected in test_cases:
+            mock_wrapped = Mock()
+            mock_wrapped.__name__ = function_name
+            
+            result = extract_db_operation_name(
+                wrapped=mock_wrapped,
+                module_name=module_name,
+                function_name=function_name
+            )
+            
+            assert result == expected, f"Expected {expected} for {module_name}.{function_name}, got {result}"
+
+    def test_camel_case_vs_snake_case_patterns(self):
+        """Test that function name patterns are specific to the implementation."""
+        # The implementation looks for specific patterns, not general naming conventions
+        test_cases = [
+            ("add_object", "insert"),    # Exact match for 'add_object' in collections
+            ("addObject", "create"),     # 'add' matches create fallback, not 'add_object'
+            ("add", "create"),           # 'add' matches create fallback
+            ("insert_data", "insert"),   # Contains 'insert'
+            ("insertData", "insert"),    # Contains 'insert'
+        ]
+        
+        for function_name, expected in test_cases:
+            mock_wrapped = Mock()
+            mock_wrapped.__name__ = function_name
+            
+            result = extract_db_operation_name(
+                wrapped=mock_wrapped,
+                module_name="weaviate.collections.data",
+                function_name=function_name
+            )
+            
+            assert result == expected, f"Expected {expected} for {function_name}, got {result}"
 
 
 if __name__ == "__main__":

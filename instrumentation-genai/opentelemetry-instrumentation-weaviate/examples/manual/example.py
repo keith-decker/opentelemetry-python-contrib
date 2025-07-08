@@ -2,6 +2,7 @@ import weaviate
 import json
 import os
 from opentelemetry.instrumentation.weaviate import WeaviateInstrumentor
+from weaviate.classes.query import MetadataQuery
 
 # Load environment variables
 from dotenv import load_dotenv
@@ -39,11 +40,13 @@ questions = client.collections.get("Question")
 
 response = questions.query.near_text(
     query="biology",
-    limit=2
+    limit=2,
+    return_metadata=MetadataQuery(distance=True)
 )
 
 for obj in response.objects:
     print(json.dumps(obj.properties, indent=2))
+    print(json.dumps(obj.metadata.__dict__, indent=2))
 
 client.close()
 
