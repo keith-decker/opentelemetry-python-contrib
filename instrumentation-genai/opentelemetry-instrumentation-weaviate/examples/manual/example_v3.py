@@ -1,4 +1,4 @@
-# Tested with weaviate-client==3.26.0
+# Tested with weaviate-client==3.26.7
 # Code is adapted from official documentation.
 # V3 documentation: https://weaviate.io/developers/weaviate/client-libraries/python/python_v3
 # Some parts were also adapted from:

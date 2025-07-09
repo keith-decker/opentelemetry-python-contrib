@@ -61,6 +61,7 @@ from .mapping import SPAN_NAME_PREFIX, MAPPING_V3, MAPPING_V4
 WEAVIATE_V3 = 3
 WEAVIATE_V4 = 4
 
+WEAVIATE_VERSION = None
 _instruments = ("weaviate-client >= 3.0.0, < 5",)
 
 
@@ -109,16 +110,6 @@ class WeaviateInstrumentor(BaseInstrumentor):
             )
 
     def _uninstrument(self, **kwargs: Any) -> None:
-        try:
-            major_version = int(weaviate.__version__.split('.')[0])
-            if major_version >= 4:
-                WEAVIATE_VERSION = WEAVIATE_V4
-            else:
-                WEAVIATE_VERSION = WEAVIATE_V3
-        except (ValueError, IndexError):
-            # Default to V3 if version parsing fails
-            WEAVIATE_VERSION = WEAVIATE_V3
-
         wrappings = MAPPING_V3 if WEAVIATE_VERSION == WEAVIATE_V3 else MAPPING_V4
         for to_unwrap in wrappings:  
             unwrap(
@@ -216,7 +207,11 @@ class _WeaviateTraceInjectionWrapper:
             operation_name = extract_db_operation_name(wrapped, module_name, function_name)
             
             span.set_attribute(DbAttributes.DB_OPERATION_NAME, operation_name)
-            span.set_attribute(DbAttributes.DB_NAME, "TBD")  # Replace with actual DB name if available
+
+            # Weaviate does not have a specific database name, so we use collection and tenant if available
+            tenant = self._extract_tenant(args, kwargs)
+            if tenant:
+                span.set_attribute("db.weaviate.tenant", tenant)
             
             # Extract collection name from the operation
             collection_name = extract_collection_name(wrapped, instance, args, kwargs, module_name, function_name)
@@ -302,3 +297,8 @@ class _WeaviateTraceInjectionWrapper:
             pass
         return documents
     
+    def _extract_tenant(self, args: Any, kwargs: Any) -> Optional[str]:
+        """Extract tenant from operation arguments."""
+        if 'tenant' in kwargs:
+            return kwargs['tenant']
+        return None
