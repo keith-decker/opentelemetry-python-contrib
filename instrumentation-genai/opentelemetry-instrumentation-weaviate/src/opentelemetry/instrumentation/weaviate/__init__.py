@@ -35,6 +35,7 @@ API
 ---
 """
 import json
+import weaviate
 from typing import Any, Collection, Dict, Optional
 from contextvars import ContextVar
 
@@ -55,7 +56,10 @@ from opentelemetry.semconv.schemas import Schemas
 
 from .utils import dont_throw, parse_url_to_host_port, extract_db_operation_name, extract_collection_name
 from opentelemetry.instrumentation.utils import unwrap
-from .mapping import SPAN_NAME_PREFIX, SPAN_WRAPPING  
+from .mapping import SPAN_NAME_PREFIX, MAPPING_V3, MAPPING_V4 
+
+WEAVIATE_V3 = 3
+WEAVIATE_V4 = 4
 
 _instruments = ("weaviate-client >= 3.0.0, < 5",)
 
@@ -84,15 +88,20 @@ class WeaviateInstrumentor(BaseInstrumentor):
             schema_url=Schemas.V1_28_0.value,
         )
 
-        # Overload the init on the client to capture host and port
-        # and set them in the context for later use in spans.
-        wrap_function_wrapper(
-            module="weaviate",
-            name="WeaviateClient.__init__",
-            wrapper=_WeaviateConnectionInjectionWrapper(tracer),
-        )
+        try:
+            major_version = int(weaviate.__version__.split('.')[0])
+            if major_version >= 4:
+                WEAVIATE_VERSION = WEAVIATE_V4
+            else:
+                WEAVIATE_VERSION = WEAVIATE_V3
+        except (ValueError, IndexError):
+            # Default to V3 if version parsing fails
+            WEAVIATE_VERSION = WEAVIATE_V3
 
-        for to_wrap in SPAN_WRAPPING:  
+        self._get_server_details(WEAVIATE_VERSION, tracer)
+
+        wrappings = MAPPING_V3 if WEAVIATE_VERSION == WEAVIATE_V3 else MAPPING_V4
+        for to_wrap in MAPPING_V3:  
             wrap_function_wrapper(
                 module=to_wrap["module"],  
                 name=to_wrap["name"],  
@@ -100,7 +109,18 @@ class WeaviateInstrumentor(BaseInstrumentor):
             )
 
     def _uninstrument(self, **kwargs: Any) -> None:
-        for to_unwrap in SPAN_WRAPPING:  
+        try:
+            major_version = int(weaviate.__version__.split('.')[0])
+            if major_version >= 4:
+                WEAVIATE_VERSION = WEAVIATE_V4
+            else:
+                WEAVIATE_VERSION = WEAVIATE_V3
+        except (ValueError, IndexError):
+            # Default to V3 if version parsing fails
+            WEAVIATE_VERSION = WEAVIATE_V3
+
+        wrappings = MAPPING_V3 if WEAVIATE_VERSION == WEAVIATE_V3 else MAPPING_V4
+        for to_unwrap in wrappings:  
             unwrap(
                 to_unwrap["module"],  
                 to_unwrap["name"],  
@@ -110,6 +130,20 @@ class WeaviateInstrumentor(BaseInstrumentor):
         unwrap(
             "weaviate",
             "WeaviateClient.__init__"
+        )
+
+    def _get_server_details(self, version: int, tracer: Tracer) -> None:
+        if version == WEAVIATE_V3:
+            wrap_function_wrapper(
+                module="weaviate",
+                name="Client.__init__",
+                wrapper=_WeaviateConnectionInjectionWrapper(tracer),
+            )
+        elif version == WEAVIATE_V4:
+            wrap_function_wrapper(
+            module="weaviate",
+            name="WeaviateClient.__init__",
+            wrapper=_WeaviateConnectionInjectionWrapper(tracer),
         )
 
 
@@ -125,18 +159,31 @@ class _WeaviateConnectionInjectionWrapper:
     def __call__(self, wrapped: Any, instance: Any, args: Any, kwargs: Any) -> Any:
         name = f"{SPAN_NAME_PREFIX}.{getattr(wrapped, '__name__', 'unknown')}"
         with self.tracer.start_as_current_span(name) as span:
-            # Extract connection details from args/kwargs
+            # Extract connection details from args/kwargs before calling wrapped function
             connection_host = None
             connection_port = None
-      
-            return_value = wrapped(*args, **kwargs)
             connection_url = None
-            if hasattr(instance, '_connection') and instance._connection is not None:
-                connection_url = instance._connection.url
+            
+            # For v3, extract URL from constructor arguments
+            # weaviate.Client(url="http://localhost:8080", ...)
+            if args and len(args) > 0:
+                # First positional argument is typically the URL
+                connection_url = args[0]
+            elif 'url' in kwargs:
+                # URL passed as keyword argument
+                connection_url = kwargs['url']
+            
             if connection_url:
                 connection_host, connection_port = parse_url_to_host_port(connection_url)
-            else:
-                connection_host, connection_port = None, None
+      
+            return_value = wrapped(*args, **kwargs)
+            
+            # For v4, try to extract from instance after creation (fallback)
+            if not connection_url and hasattr(instance, '_connection') and instance._connection is not None:
+                connection_url = instance._connection.url
+                if connection_url:
+                    connection_host, connection_port = parse_url_to_host_port(connection_url)
+                    
             _connection_host_context.set(connection_host)
             _connection_port_context.set(connection_port)
             if connection_host is not None:
@@ -227,6 +274,7 @@ class _WeaviateTraceInjectionWrapper:
         """
         Extract documents from weaviate response.
         """
+        #TODO: Pagination, cursor?
         documents: list[dict[str, Any]] = []
         try:
             if hasattr(response, 'objects'):
