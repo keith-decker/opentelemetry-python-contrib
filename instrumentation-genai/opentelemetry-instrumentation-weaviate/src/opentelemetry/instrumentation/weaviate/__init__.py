@@ -55,7 +55,7 @@ from opentelemetry.semconv._incubating.attributes import server_attributes as Se
 from opentelemetry.semconv.schemas import Schemas
 
 from .utils import dont_throw, parse_url_to_host_port, extract_db_operation_name, extract_collection_name
-from opentelemetry.instrumentation.utils import unwrap
+from opentelemetry.instrumentation.utils import unwrap, is_instrumentation_enabled
 from .mapping import SPAN_NAME_PREFIX, MAPPING_V3, MAPPING_V4 
 
 WEAVIATE_V3 = 3
@@ -148,6 +148,9 @@ class _WeaviateConnectionInjectionWrapper:
         self.tracer = tracer
 
     def __call__(self, wrapped: Any, instance: Any, args: Any, kwargs: Any) -> Any:
+        if not is_instrumentation_enabled():
+            return wrapped(*args, **kwargs)
+            
         name = f"{SPAN_NAME_PREFIX}.{getattr(wrapped, '__name__', 'unknown')}"
         with self.tracer.start_as_current_span(name) as span:
             # Extract connection details from args/kwargs before calling wrapped function
@@ -197,6 +200,9 @@ class _WeaviateTraceInjectionWrapper:
         """
         Wraps the original function to inject tracing headers.
         """
+        if not is_instrumentation_enabled():
+            return wrapped(*args, **kwargs)
+            
         name = f"{SPAN_NAME_PREFIX}.{getattr(wrapped, '__name__', 'unknown')}"        
         with self.tracer.start_as_current_span(name) as span:
             span.set_attribute(DbAttributes.DB_SYSTEM_NAME, "weaviate")
