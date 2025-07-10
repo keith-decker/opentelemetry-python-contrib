@@ -81,6 +81,7 @@ class WeaviateInstrumentor(BaseInstrumentor):
         return _instruments
 
     def _instrument(self, **kwargs: Any) -> None:
+        global WEAVIATE_VERSION
         tracer_provider = kwargs.get("tracer_provider")
         tracer = get_tracer(
             __name__,
@@ -102,7 +103,7 @@ class WeaviateInstrumentor(BaseInstrumentor):
         self._get_server_details(WEAVIATE_VERSION, tracer)
 
         wrappings = MAPPING_V3 if WEAVIATE_VERSION == WEAVIATE_V3 else MAPPING_V4
-        for to_wrap in MAPPING_V3:  
+        for to_wrap in wrappings:  
             wrap_function_wrapper(
                 module=to_wrap["module"],  
                 name=to_wrap["name"],  
@@ -110,6 +111,7 @@ class WeaviateInstrumentor(BaseInstrumentor):
             )
 
     def _uninstrument(self, **kwargs: Any) -> None:
+        global WEAVIATE_VERSION
         wrappings = MAPPING_V3 if WEAVIATE_VERSION == WEAVIATE_V3 else MAPPING_V4
         for to_unwrap in wrappings:  
             unwrap(
@@ -118,10 +120,10 @@ class WeaviateInstrumentor(BaseInstrumentor):
             )
         
         # unwrap the connection initialization to remove the context variable injection
-        unwrap(
-            "weaviate",
-            "WeaviateClient.__init__"
-        )
+        if WEAVIATE_VERSION == WEAVIATE_V3:
+            unwrap("weaviate", "Client.__init__")
+        elif WEAVIATE_VERSION == WEAVIATE_V4:
+            unwrap("weaviate", "WeaviateClient.__init__")
 
     def _get_server_details(self, version: int, tracer: Tracer) -> None:
         if version == WEAVIATE_V3:
@@ -205,7 +207,7 @@ class _WeaviateTraceInjectionWrapper:
             
         name = f"{SPAN_NAME_PREFIX}.{getattr(wrapped, '__name__', 'unknown')}"        
         with self.tracer.start_as_current_span(name) as span:
-            span.set_attribute(DbAttributes.DB_SYSTEM_NAME, "weaviate")
+            span.set_attribute(DbAttributes.DB_SYSTEM, "weaviate")
             
             # Extract operation name dynamically from the function call
             module_name = self.wrap_properties.get("module", "")
