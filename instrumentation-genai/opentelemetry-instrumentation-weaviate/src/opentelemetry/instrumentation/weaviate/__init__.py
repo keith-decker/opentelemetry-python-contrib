@@ -44,7 +44,7 @@ from wrapt import wrap_function_wrapper  # type: ignore
 from opentelemetry.instrumentation.weaviate.config import Config
 from opentelemetry.instrumentation.weaviate.version import __version__
 from opentelemetry.instrumentation.instrumentor import BaseInstrumentor
-from opentelemetry.trace import get_tracer, Tracer
+from opentelemetry.trace import get_tracer, Tracer, SpanKind
 # from opentelemetry.metrics import get_meter
 # from opentelemetry._events import get_event_logger
 from opentelemetry.semconv._incubating.attributes import db_attributes as DbAttributes
@@ -114,16 +114,25 @@ class WeaviateInstrumentor(BaseInstrumentor):
         global WEAVIATE_VERSION
         wrappings = MAPPING_V3 if WEAVIATE_VERSION == WEAVIATE_V3 else MAPPING_V4
         for to_unwrap in wrappings:  
-            unwrap(
-                to_unwrap["module"],  
-                to_unwrap["name"],  
-            )
+            try:
+                unwrap(
+                    to_unwrap["module"],  
+                    to_unwrap["name"],  
+                )
+            except (ImportError, AttributeError, ValueError) as e:
+                # Ignore errors when unwrapping - module might not be loaded
+                # or function might not be wrapped
+                pass
         
         # unwrap the connection initialization to remove the context variable injection
-        if WEAVIATE_VERSION == WEAVIATE_V3:
-            unwrap("weaviate", "Client.__init__")
-        elif WEAVIATE_VERSION == WEAVIATE_V4:
-            unwrap("weaviate", "WeaviateClient.__init__")
+        try:
+            if WEAVIATE_VERSION == WEAVIATE_V3:
+                unwrap(weaviate, "Client.__init__")
+            elif WEAVIATE_VERSION == WEAVIATE_V4:
+                unwrap(weaviate, "WeaviateClient.__init__")
+        except (ImportError, AttributeError, ValueError) as e:
+            # Ignore errors when unwrapping connection methods
+            pass
 
     def _get_server_details(self, version: int, tracer: Tracer) -> None:
         if version == WEAVIATE_V3:
@@ -154,7 +163,7 @@ class _WeaviateConnectionInjectionWrapper:
             return wrapped(*args, **kwargs)
             
         name = f"{SPAN_NAME_PREFIX}.{getattr(wrapped, '__name__', 'unknown')}"
-        with self.tracer.start_as_current_span(name) as span:
+        with self.tracer.start_as_current_span(name, kind=SpanKind.CLIENT) as span:
             # Extract connection details from args/kwargs before calling wrapped function
             connection_host = None
             connection_port = None
@@ -206,7 +215,7 @@ class _WeaviateTraceInjectionWrapper:
             return wrapped(*args, **kwargs)
             
         name = f"{SPAN_NAME_PREFIX}.{getattr(wrapped, '__name__', 'unknown')}"        
-        with self.tracer.start_as_current_span(name) as span:
+        with self.tracer.start_as_current_span(name, kind=SpanKind.CLIENT) as span:
             span.set_attribute(DbAttributes.DB_SYSTEM, "weaviate")
             
             # Extract operation name dynamically from the function call

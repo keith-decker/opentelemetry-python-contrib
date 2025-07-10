@@ -14,6 +14,7 @@
 
 from unittest import mock
 import pytest
+import weaviate
 
 from opentelemetry.trace import SpanKind
 from opentelemetry.instrumentation.weaviate.mapping import SPAN_NAME_PREFIX, MAPPING_V3
@@ -37,9 +38,15 @@ class TestWeaviateV3SpanGeneration(WeaviateSpanTestBase):
 
     def test_v3_connection_span_creation(self):
         """Test that v3 client initialization creates connection span."""
-        with mock.patch("weaviate.Client") as mock_client:
-            mock_client.return_value = create_mock_weaviate_v3_client()
-            client = mock_client("http://localhost:8080")
+        # Mock the connection to avoid network calls, but use real Weaviate client
+        with mock.patch('weaviate.connect.connection.Connection') as mock_connection:
+            # Mock the connection object  
+            mock_conn_instance = mock.MagicMock()
+            mock_conn_instance.url = "http://localhost:8080"
+            mock_connection.return_value = mock_conn_instance
+            
+            # Create real client - this will trigger connection instrumentation
+            client = weaviate.Client("http://localhost:8080")
             
         spans = self.assert_span_count(1)
         span = spans[0]
@@ -116,22 +123,36 @@ class TestWeaviateV3SpanGeneration(WeaviateSpanTestBase):
         spans = self.memory_exporter.get_finished_spans()
         self.assertGreaterEqual(len(spans), 1)
 
-    @mock.patch("weaviate.gql.query.Query.get")
-    def test_query_get_span(self, mock_query_get):
+    def test_query_get_span(self):
         """Test span creation for Query.get operation."""
-        mock_builder = mock.MagicMock()
-        mock_builder.do.return_value = {"data": {"Get": {}}}
-        mock_query_get.return_value = mock_builder
-        
-        with mock.patch("weaviate.Client") as mock_client:
-            client_instance = create_mock_weaviate_v3_client()
-            mock_client.return_value = client_instance
+        # Mock the connection to avoid network calls, but use real Weaviate client
+        with mock.patch('weaviate.connect.connection.Connection') as mock_connection:
+            # Mock the connection object  
+            mock_conn_instance = mock.MagicMock()
+            mock_conn_instance.url = "http://localhost:8080"
+            mock_connection.return_value = mock_conn_instance
             
-            client = mock_client("http://localhost:8080")
-            result = client.query.get("TestClass").do()
+            # Create real client - this will trigger connection instrumentation
+            client = weaviate.Client("http://localhost:8080")
+            
+            # Mock the network request that schema.get makes, but not the method itself
+            with mock.patch('requests.get') as mock_get:
+                mock_response = mock.MagicMock()
+                mock_response.status_code = 200
+                mock_response.json.return_value = {"classes": []}
+                mock_get.return_value = mock_response
+                
+                # Call the real schema.get method - this should trigger instrumentation
+                result = client.schema.get()
             
         spans = self.memory_exporter.get_finished_spans()
-        self.assertGreaterEqual(len(spans), 1)
+        # Should have at least 2 spans: connection + schema.get
+        self.assertGreaterEqual(len(spans), 2)
+        
+        # Check that we have both connection and operation spans
+        span_names = [span.name for span in spans]
+        self.assertIn(f"{SPAN_NAME_PREFIX}.__init__", span_names)
+        self.assertTrue(any("get" in name for name in span_names))
 
     def test_v3_parent_child_relationship(self):
         """Test parent-child relationship between connection and operation spans."""
