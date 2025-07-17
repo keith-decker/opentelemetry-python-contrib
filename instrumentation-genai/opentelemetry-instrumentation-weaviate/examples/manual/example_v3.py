@@ -11,6 +11,7 @@ from opentelemetry.instrumentation.weaviate import WeaviateInstrumentor
 
 # Load environment variables
 from dotenv import load_dotenv
+
 load_dotenv()
 
 # Configure OpenTelemetry SDK with both OTLP and console exporters
@@ -39,7 +40,7 @@ trace.set_tracer_provider(tracer_provider)
 # Add OTLP exporter (reads from OTEL_EXPORTER_OTLP_ENDPOINT env var)
 otlp_exporter = OTLPSpanExporter(
     endpoint=os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4317"),
-    headers=()
+    headers=(),
 )
 otlp_processor = BatchSpanProcessor(otlp_exporter)
 tracer_provider.add_span_processor(otlp_processor)

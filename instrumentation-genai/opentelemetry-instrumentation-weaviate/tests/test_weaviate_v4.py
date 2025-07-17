@@ -14,6 +14,7 @@
 
 from unittest import mock
 import pytest
+import weaviate
 
 from opentelemetry.trace import SpanKind
 from opentelemetry.instrumentation.weaviate.mapping import SPAN_NAME_PREFIX, MAPPING_V4
@@ -37,80 +38,142 @@ class TestWeaviateV4SpanGeneration(WeaviateSpanTestBase):
 
     def test_v4_connection_span_creation(self):
         """Test that v4 client initialization creates connection span."""
-        with mock.patch("weaviate.WeaviateClient") as mock_client:
-            mock_client.return_value = create_mock_weaviate_v4_client()
-            client = mock_client()
+        # Mock the underlying connection to avoid network calls but allow real client creation
+        with mock.patch('weaviate.connect.v4.ConnectionV4') as mock_connection:
+            mock_conn_instance = mock.MagicMock()
+            mock_conn_instance._url = "http://localhost:8080"
+            mock_connection.return_value = mock_conn_instance
+            
+            # Create real client using connect_to_local to trigger instrumentation
+            client = weaviate.connect_to_local(skip_init_checks=True)
+            
+        spans = self.assert_span_count(1)
+        span = spans[0]
+        
+        self.assert_span_properties(span, f"{SPAN_NAME_PREFIX}.__init__", SpanKind.CLIENT)
+            
+        spans = self.assert_span_count(1)
+        span = spans[0]
+        
+        self.assert_span_properties(span, f"{SPAN_NAME_PREFIX}.__init__", SpanKind.CLIENT)
             
         spans = self.assert_span_count(1)
         span = spans[0]
         
         self.assert_span_properties(span, f"{SPAN_NAME_PREFIX}.__init__", SpanKind.CLIENT)
 
-    @mock.patch("weaviate.collections.collections._Collections.get")
-    def test_collections_get_span(self, mock_get):
+    def test_collections_get_span(self):
         """Test span creation for Collections.get operation."""
-        mock_collection = mock.MagicMock()
-        mock_get.return_value = mock_collection
-        
-        with mock.patch("weaviate.WeaviateClient") as mock_client:
-            client_instance = create_mock_weaviate_v4_client()
-            mock_client.return_value = client_instance
+        # Mock the underlying connection to avoid network calls
+        with mock.patch('weaviate.connect.v4.ConnectionV4') as mock_connection:
+            mock_conn_instance = mock.MagicMock()
+            mock_conn_instance._url = "http://localhost:8080"
+            mock_connection.return_value = mock_conn_instance
             
-            client = mock_client()
-            collection = client.collections.get("TestCollection")
+            # Create real client
+            client = weaviate.connect_to_local(skip_init_checks=True)
             
+            # Mock the HTTP GET request for collections.get
+            with mock.patch('httpx.get') as mock_get:
+                mock_response = mock.MagicMock()
+                mock_response.json.return_value = {"name": "TestCollection"}
+                mock_response.status_code = 200
+                mock_get.return_value = mock_response
+                
+                # Call real method to trigger instrumentation
+                collection = client.collections.get("TestCollection")
+                
         spans = self.memory_exporter.get_finished_spans()
         
         # Should have connection span + operation span
         self.assertGreaterEqual(len(spans), 1)
 
-    @mock.patch("weaviate.collections.collections._Collections.create")
-    def test_collections_create_span(self, mock_create):
+    def test_collections_create_span(self):
         """Test span creation for Collections.create operation."""
-        mock_collection = mock.MagicMock()
-        mock_create.return_value = mock_collection
-        
-        with mock.patch("weaviate.WeaviateClient") as mock_client:
-            client_instance = create_mock_weaviate_v4_client()
-            mock_client.return_value = client_instance
+        # Mock the underlying connection to avoid network calls
+        with mock.patch('weaviate.connect.v4.ConnectionV4') as mock_connection:
+            mock_conn_instance = mock.MagicMock()
+            mock_conn_instance._url = "http://localhost:8080"
+            mock_connection.return_value = mock_conn_instance
             
-            client = mock_client()
-            collection = client.collections.create("TestCollection")
+            # Create real client
+            client = weaviate.connect_to_local(skip_init_checks=True)
             
+            # Mock the HTTP POST request for collections.create
+            with mock.patch('httpx.post') as mock_post:
+                mock_response = mock.MagicMock()
+                mock_response.json.return_value = {"name": "TestCollection"}
+                mock_response.status_code = 200
+                mock_post.return_value = mock_response
+                
+                # Call real method to trigger instrumentation
+                collection = client.collections.create("TestCollection")
+                
         spans = self.memory_exporter.get_finished_spans()
         self.assertGreaterEqual(len(spans), 1)
 
-    @mock.patch("weaviate.collections.data._DataCollection.insert")
-    def test_data_insert_span(self, mock_insert):
+    def test_data_insert_span(self):
         """Test span creation for DataCollection.insert operation."""
-        mock_insert.return_value = "mock-uuid"
-        
-        with mock.patch("weaviate.WeaviateClient") as mock_client:
-            client_instance = create_mock_weaviate_v4_client()
-            mock_client.return_value = client_instance
+        # Mock the underlying connection to avoid network calls
+        with mock.patch('weaviate.connect.v4.ConnectionV4') as mock_connection:
+            mock_conn_instance = mock.MagicMock()
+            mock_conn_instance._url = "http://localhost:8080"
+            mock_connection.return_value = mock_conn_instance
             
-            client = mock_client()
-            collection = client.collections.get("TestCollection")
-            result = collection.data.insert({"title": "test"})
+            # Create real client
+            client = weaviate.connect_to_local(skip_init_checks=True)
             
+            # Mock the HTTP requests
+            with mock.patch('httpx.get') as mock_get, mock.patch('httpx.post') as mock_post:
+                # Mock get collection response
+                mock_get_response = mock.MagicMock()
+                mock_get_response.json.return_value = {"name": "TestCollection"}
+                mock_get_response.status_code = 200
+                mock_get.return_value = mock_get_response
+                
+                # Mock insert response
+                mock_post_response = mock.MagicMock()
+                mock_post_response.json.return_value = {"id": "mock-uuid"}
+                mock_post_response.status_code = 200
+                mock_post.return_value = mock_post_response
+                
+                # Call real methods to trigger instrumentation
+                collection = client.collections.get("TestCollection")
+                result = collection.data.insert({"title": "test"})
+                
         spans = self.memory_exporter.get_finished_spans()
         self.assertGreaterEqual(len(spans), 1)
 
     @mock.patch("weaviate.collections.queries.near_text.query._NearTextQuery.near_text")
-    def test_near_text_query_span(self, mock_near_text):
-        """Test span creation for near_text query operation."""
-        mock_result = mock.MagicMock()
-        mock_result.objects = []
-        mock_near_text.return_value = mock_result
-        
-        with mock.patch("weaviate.WeaviateClient") as mock_client:
-            client_instance = create_mock_weaviate_v4_client()
-            mock_client.return_value = client_instance
+    def test_near_text_query_span(self):
+        """Test span creation for near_text query operation.""" 
+        # Mock the underlying connection to avoid network calls
+        with mock.patch('weaviate.connect.v4.ConnectionV4') as mock_connection:
+            mock_conn_instance = mock.MagicMock()
+            mock_conn_instance._url = "http://localhost:8080"
+            mock_connection.return_value = mock_conn_instance
             
-            client = mock_client()
-            collection = client.collections.get("TestCollection")
-            result = collection.query.near_text("test query")
+            # Create real client
+            client = weaviate.connect_to_local(skip_init_checks=True)
             
+            # Mock the HTTP requests
+            with mock.patch('httpx.get') as mock_get, mock.patch('httpx.post') as mock_post:
+                # Mock get collection response
+                mock_get_response = mock.MagicMock()
+                mock_get_response.json.return_value = {"name": "TestCollection"}
+                mock_get_response.status_code = 200
+                mock_get.return_value = mock_get_response
+                
+                # Mock query response
+                mock_post_response = mock.MagicMock()
+                mock_post_response.json.return_value = {"data": {"Get": {"TestCollection": []}}}
+                mock_post_response.status_code = 200
+                mock_post.return_value = mock_post_response
+                
+                # Call real methods to trigger instrumentation
+                collection = client.collections.get("TestCollection")
+                result = collection.query.near_text("test query")
+                
         spans = self.memory_exporter.get_finished_spans()
         self.assertGreaterEqual(len(spans), 1)
 
