@@ -256,15 +256,17 @@ class _WeaviateTraceInjectionWrapper:
                         query = {}
                         if 'query' in kwargs:
                             query = json.dumps(kwargs['query'])
+                        attributes = {
+                            "db.weaviate.document.content": json.dumps(doc['content']),
+                            "db.weaviate.document.distance": doc.get("distance", None),
+                            "db.weaviate.document.certainty": doc.get("certainty", None),
+                            "db.weaviate.document.score": doc.get("score", None),
+                        }
+                        if query:
+                            attributes["db.weaviate.document.query"] = query
                         span.add_event(
                             "weaviate.document",
-                            attributes={
-                                "db.weaviate.document.content": json.dumps(doc.get("content", {})),
-                                "db.weaviate.document.distance": doc.get("distance", None),
-                                "db.weaviate.document.certainty": doc.get("certainty", None),
-                                "db.weaviate.document.score": doc.get("score", None),
-                                "db.weaviate.document.query": json.dumps(query),
-                            }
+                            attributes=attributes
                         )
 
 
@@ -298,11 +300,11 @@ class _WeaviateTraceInjectionWrapper:
                     # Extract similarity scores
                     if hasattr(obj, 'metadata') and obj.metadata:
                         metadata = obj.metadata
-                        if hasattr(metadata, 'distance'):
+                        if hasattr(metadata, 'distance') and metadata.distance is not None:
                             doc['distance'] = metadata.distance
-                        if hasattr(metadata, 'certainty'):
+                        if hasattr(metadata, 'certainty') and metadata.certainty is not None:
                             doc['certainty'] = metadata.certainty
-                        if hasattr(metadata, 'score'):
+                        if hasattr(metadata, 'score') and metadata.score is not None:
                             doc['score'] = metadata.score
                     
                     documents.append(doc)
