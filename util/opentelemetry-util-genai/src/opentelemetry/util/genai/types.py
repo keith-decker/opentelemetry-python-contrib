@@ -88,6 +88,11 @@ class ToolCall(ToolCallRequest):
     # error.type - Error type if the tool call failed
     error_type: str | None = None
 
+    # Lifecycle tracking fields (used by TelemetryHandler):
+    context_token: ContextToken | None = None
+    span: Span | None = None
+    monotonic_start_s: float | None = None
+
 
 @dataclass()
 class ToolCallResponse:
