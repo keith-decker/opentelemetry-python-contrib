@@ -1,29 +1,36 @@
 OpenTelemetry LangChain Tool Call Example
 =========================================
 
-This example demonstrates automatic tool call instrumentation with LangChain.
+This example demonstrates tool call instrumentation with LangChain.
 The ``LangChainInstrumentor`` automatically creates spans for:
 
 - LLM calls (chat completions)
 - Tool executions (via ``on_tool_start``/``on_tool_end`` callbacks)
 
+The demo wraps both in an ``agent_workflow`` parent span to maintain trace continuity.
+
 When ``main.py`` runs, it exports traces to an OTLP-compatible endpoint showing:
 
-- Chat span for the LLM invocation
-- Tool call span as a child of the chat span
-- Proper semantic convention attributes on both spans
+- Agent workflow span as the root
+- Chat span and tool call span as children of the workflow
+- Proper semantic convention attributes on all spans
 
 Sample Trace Output
 -------------------
 
 ::
 
-    Span: chat gpt-4o-mini
-    ├── Kind: Client
+    Span: agent_workflow
+    ├── Kind: Internal
     ├── Attributes:
-    │   ├── gen_ai.operation.name: chat
-    │   ├── gen_ai.request.model: gpt-4o-mini
-    │   └── gen_ai.provider.name: openai
+    │   └── gen_ai.operation.name: invoke_agent
+    │
+    ├── Span: chat gpt-4o-mini
+    │   ├── Kind: Client
+    │   └── Attributes:
+    │       ├── gen_ai.operation.name: chat
+    │       ├── gen_ai.request.model: gpt-4o-mini
+    │       └── gen_ai.provider.name: openai
     │
     └── Span: execute_tool get_weather
         ├── Kind: Internal
@@ -108,8 +115,9 @@ attributes to tool call spans.
 How It Works
 ------------
 
-The ``LangChainInstrumentor`` uses callback handlers to intercept LangChain
-operations:
+The demo wraps the LLM call and tool execution in an ``agent_workflow`` span
+to ensure they share the same trace. The ``LangChainInstrumentor`` uses callback
+handlers to intercept LangChain operations:
 
 1. ``on_chat_model_start`` - Creates a chat span when the LLM is invoked
 2. ``on_llm_end`` - Ends the chat span with token usage and response data
