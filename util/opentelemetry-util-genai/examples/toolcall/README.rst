@@ -1,53 +1,47 @@
-OpenTelemetry GenAI Tool Call Example
-=====================================
+OpenTelemetry LangChain Tool Call Example
+=========================================
 
-This example demonstrates the ``ToolCall`` and ``TelemetryHandler`` APIs from
-``opentelemetry-util-genai``. It shows how to create properly instrumented
-tool call spans with nested hierarchy, simulating an AI agent that calls tools.
+This example demonstrates automatic tool call instrumentation with LangChain.
+The ``LangChainInstrumentor`` automatically creates spans for:
+
+- LLM calls (chat completions)
+- Tool executions (via ``on_tool_start``/``on_tool_end`` callbacks)
 
 When ``main.py`` runs, it exports traces to an OTLP-compatible endpoint showing:
 
-- Tool call spans with proper semantic convention attributes
-- Nested span hierarchy: ``workflow → llm → tool_call``
-- Error handling for failed tool executions
+- Chat span for the LLM invocation
+- Tool call span as a child of the chat span
+- Proper semantic convention attributes on both spans
 
 Sample Trace Output
 -------------------
 
 ::
 
-    Span: invoke_agent SimpleAgent
+    Span: chat gpt-4o-mini
+    ├── Kind: Client
     ├── Attributes:
-    │   └── gen_ai.operation.name: invoke_agent
+    │   ├── gen_ai.operation.name: chat
+    │   ├── gen_ai.request.model: gpt-4o-mini
+    │   └── gen_ai.provider.name: openai
     │
-    └── Span: chat gpt-4
-        ├── Attributes:
-        │   ├── gen_ai.operation.name: chat
-        │   ├── gen_ai.request.model: gpt-4
-        │   └── gen_ai.provider.name: openai
-        │
-        ├── Span: execute_tool get_weather
-        │   └── Attributes:
-        │       ├── gen_ai.operation.name: execute_tool
-        │       ├── gen_ai.tool.name: get_weather
-        │       ├── gen_ai.tool.call.id: call_100
-        │       └── gen_ai.tool.type: function
-        │
-        └── Span: execute_tool calculate
-            └── Attributes:
-                ├── gen_ai.operation.name: execute_tool
-                ├── gen_ai.tool.name: calculate
-                ├── gen_ai.tool.call.id: call_101
-                └── gen_ai.tool.type: function
+    └── Span: execute_tool get_weather
+        ├── Kind: Internal
+        └── Attributes:
+            ├── gen_ai.operation.name: execute_tool
+            ├── gen_ai.tool.name: get_weather
+            ├── gen_ai.tool.call.id: <uuid>
+            └── gen_ai.tool.type: function
 
 Setup
 -----
 
-1. Copy ``.env.example`` to ``.env`` and configure your OTLP endpoint:
+1. Copy ``.env.example`` to ``.env`` and add your OpenAI API key:
 
    ::
 
        cp .env.example .env
+       # Edit .env and set OPENAI_API_KEY=sk-...
 
 2. Start an OTLP-compatible collector (e.g., Jaeger):
 
@@ -67,8 +61,9 @@ Setup
        pip install "python-dotenv[cli]"
        pip install -r requirements.txt
 
-       # Install the local util-genai package
-       pip install -e ../../
+       # Install local packages (from repo root)
+       pip install -e ../../                                    # util-genai
+       pip install -e ../../../../instrumentation-genai/opentelemetry-instrumentation-langchain
 
 Run
 ---
@@ -77,14 +72,30 @@ Run
 
     dotenv run -- python main.py
 
-You should see console output showing the tool executions, and traces will
-appear in your OTLP endpoint (e.g., Jaeger UI at http://localhost:16686).
+You should see console output like:
+
+::
+
+    OpenTelemetry LangChain Tool Call Demo
+    ========================================
+
+    Sending query: 'What is the weather in Paris?'
+    LLM Response:
+
+    Tool calls requested: 1
+      - get_weather({'location': 'Paris'})
+        Result: Weather in Paris: 18°C, cloudy
+
+    ========================================
+    Demo complete! Check your OTLP endpoint for traces.
+
+Traces will appear in Jaeger UI at http://localhost:16686.
 
 Content Capturing
 -----------------
 
 To capture tool arguments and results in span attributes, set the environment
-variable:
+variables (already in ``.env.example``):
 
 ::
 
@@ -94,25 +105,15 @@ variable:
 This adds ``gen_ai.tool.call.arguments`` and ``gen_ai.tool.call.result``
 attributes to tool call spans.
 
-API Overview
+How It Works
 ------------
 
-The example demonstrates these key APIs:
+The ``LangChainInstrumentor`` uses callback handlers to intercept LangChain
+operations:
 
-``TelemetryHandler.tool_call(ToolCall)``
-    Context manager for tool call spans. Automatically handles errors.
+1. ``on_chat_model_start`` - Creates a chat span when the LLM is invoked
+2. ``on_llm_end`` - Ends the chat span with token usage and response data
+3. ``on_tool_start`` - Creates an ``execute_tool`` span when a tool runs
+4. ``on_tool_end`` - Ends the tool span with the result
 
-``ToolCall``
-    Dataclass representing a tool invocation with:
-    - ``name``: Tool name (required)
-    - ``arguments``: Parameters passed to tool
-    - ``id``: Unique call identifier
-    - ``tool_type``: "function", "extension", or "datastore"
-    - ``tool_description``: Human-readable description
-    - ``tool_result``: Set inside context with execution result
-
-``TelemetryHandler.llm(LLMInvocation)``
-    Context manager for LLM spans (parent for tool calls).
-
-``tracer.start_as_current_span()``
-    Standard OpenTelemetry tracer for root/agent spans.
+All spans follow the OpenTelemetry GenAI semantic conventions.

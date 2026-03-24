@@ -32,6 +32,7 @@ from opentelemetry.util.genai.types import (
     MessagePart,
     OutputMessage,
     Text,
+    ToolCall,
 )
 
 
@@ -272,4 +273,77 @@ class OpenTelemetryLangChainCallbackHandler(BaseCallbackHandler):
             invocation=llm_invocation, error=error_otel
         )
         if llm_invocation.span and not llm_invocation.span.is_recording():
+            self._invocation_manager.delete_invocation_state(run_id=run_id)
+
+    def on_tool_start(
+        self,
+        serialized: dict[str, Any],
+        input_str: str,
+        *,
+        run_id: UUID,
+        parent_run_id: Optional[UUID] = None,
+        tags: Optional[list[str]] = None,
+        metadata: Optional[dict[str, Any]] = None,
+        inputs: Optional[dict[str, Any]] = None,
+        **kwargs: Any,
+    ) -> None:
+        """Start a tool call span when LangChain invokes a tool."""
+        tool_name = serialized.get("name", "unknown")
+        tool_description = serialized.get("description")
+
+        # Parse arguments - prefer structured inputs over input_str
+        arguments: Any = inputs if inputs is not None else input_str
+
+        tool_call = ToolCall(
+            name=tool_name,
+            arguments=arguments,
+            id=str(run_id),
+            tool_type="function",
+            tool_description=tool_description,
+        )
+        tool_call = self._telemetry_handler.start_tool_call(tool_call)
+        self._invocation_manager.add_invocation_state(
+            run_id=run_id,
+            parent_run_id=parent_run_id,
+            invocation=tool_call,
+        )
+
+    def on_tool_end(
+        self,
+        output: Any,
+        *,
+        run_id: UUID,
+        parent_run_id: Optional[UUID] = None,
+        **kwargs: Any,
+    ) -> None:
+        """End a tool call span successfully."""
+        tool_call = self._invocation_manager.get_invocation(run_id=run_id)
+        if tool_call is None or not isinstance(tool_call, ToolCall):
+            return
+
+        # Store the tool result
+        tool_call.tool_result = output
+
+        tool_call = self._telemetry_handler.stop_tool_call(tool_call)
+        if tool_call.span and not tool_call.span.is_recording():
+            self._invocation_manager.delete_invocation_state(run_id=run_id)
+
+    def on_tool_error(
+        self,
+        error: BaseException,
+        *,
+        run_id: UUID,
+        parent_run_id: Optional[UUID] = None,
+        **kwargs: Any,
+    ) -> None:
+        """End a tool call span with error."""
+        tool_call = self._invocation_manager.get_invocation(run_id=run_id)
+        if tool_call is None or not isinstance(tool_call, ToolCall):
+            return
+
+        error_otel = Error(message=str(error), type=type(error))
+        tool_call = self._telemetry_handler.fail_tool_call(
+            tool_call, error_otel
+        )
+        if tool_call.span and not tool_call.span.is_recording():
             self._invocation_manager.delete_invocation_state(run_id=run_id)

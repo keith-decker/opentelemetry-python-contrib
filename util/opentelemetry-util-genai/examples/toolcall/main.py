@@ -1,16 +1,24 @@
 """
-Tool Call Demo - OpenTelemetry GenAI Utility Example
+Tool Call Demo - OpenTelemetry LangChain Instrumentation Example
 
-Demonstrates the ToolCall and TelemetryHandler APIs from opentelemetry-util-genai.
-Shows how to create properly instrumented tool call spans with nested hierarchy:
+Demonstrates automatic tool call instrumentation with LangChain.
+The LangChain instrumentor automatically creates spans for:
+- LLM calls (chat completions)
+- Tool executions (via on_tool_start/on_tool_end callbacks)
 
-    invoke_agent SimpleAgent
-    └── chat gpt-4
-        ├── execute_tool get_weather
-        └── execute_tool calculate
+Expected trace hierarchy:
+    agent_workflow
+    ├── chat gpt-4o-mini
+    └── execute_tool get_weather
 
 Run with: dotenv run -- python main.py
+
+Requires: OPENAI_API_KEY environment variable
 """
+
+from langchain_core.messages import HumanMessage
+from langchain_core.tools import tool
+from langchain_openai import ChatOpenAI
 
 from opentelemetry import _logs, metrics, trace
 from opentelemetry.exporter.otlp.proto.grpc._log_exporter import (
@@ -22,29 +30,29 @@ from opentelemetry.exporter.otlp.proto.grpc.metric_exporter import (
 from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import (
     OTLPSpanExporter,
 )
+from opentelemetry.instrumentation.langchain import LangChainInstrumentor
 from opentelemetry.sdk._logs import LoggerProvider
 from opentelemetry.sdk._logs.export import BatchLogRecordProcessor
 from opentelemetry.sdk.metrics import MeterProvider
 from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
+from opentelemetry.sdk.resources import SERVICE_NAME, Resource
 from opentelemetry.sdk.trace import TracerProvider
-from opentelemetry.sdk.trace.export import BatchSpanProcessor
-from opentelemetry.util.genai.handler import TelemetryHandler
-from opentelemetry.util.genai.types import (
-    LLMInvocation,
-    OutputMessage,
-    Text,
-    ToolCall,
-    ToolCallRequest,
+from opentelemetry.sdk.trace.export import (
+    BatchSpanProcessor,
+    ConsoleSpanExporter,
 )
 
 
 def setup_telemetry():
     """Configure OpenTelemetry SDK with OTLP exporters."""
-    # Tracing
-    trace.set_tracer_provider(TracerProvider())
-    trace.get_tracer_provider().add_span_processor(
-        BatchSpanProcessor(OTLPSpanExporter())
-    )
+    # Create resource with custom service name
+    resource = Resource.create({SERVICE_NAME: "toolcall-demo"})
+
+    # Tracing - add ConsoleSpanExporter for debugging
+    provider = TracerProvider(resource=resource)
+    provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter()))
+    provider.add_span_processor(BatchSpanProcessor(ConsoleSpanExporter()))
+    trace.set_tracer_provider(provider)
 
     # Logging
     _logs.set_logger_provider(LoggerProvider())
@@ -63,173 +71,115 @@ def setup_telemetry():
 
 
 # =============================================================================
-# Mock Tools - Simulating real tool implementations
+# Define Tools using LangChain's @tool decorator
 # =============================================================================
 
 
-def get_weather(location: str) -> dict:
-    """Get current weather for a location."""
-    # Simulate API call
-    return {
-        "location": location,
-        "temperature": 22,
-        "condition": "sunny",
-        "humidity": 45,
+@tool
+def get_weather(location: str) -> str:
+    """Get current weather for a location.
+
+    Args:
+        location: The city name to get weather for.
+
+    Returns:
+        Weather information as a string.
+    """
+    # Simulated weather data
+    weather_data = {
+        "Paris": {"temp": 18, "condition": "cloudy"},
+        "Tokyo": {"temp": 24, "condition": "sunny"},
+        "New York": {"temp": 15, "condition": "rainy"},
     }
+    data = weather_data.get(location, {"temp": 20, "condition": "unknown"})
+    return f"Weather in {location}: {data['temp']}°C, {data['condition']}"
 
 
-def calculate(expression: str) -> float:
-    """Evaluate a mathematical expression."""
-    # Simulate safe calculation (in reality, use a proper parser)
+@tool
+def calculate(expression: str) -> str:
+    """Evaluate a mathematical expression safely.
+
+    Args:
+        expression: A mathematical expression like "2 + 2" or "10 * 5".
+
+    Returns:
+        The result of the calculation.
+    """
+    # Simple safe evaluation (only digits and basic operators)
     allowed = set("0123456789+-*/(). ")
     if all(c in allowed for c in expression):
-        return eval(expression)  # noqa: S307 - demo only
-    raise ValueError(f"Invalid expression: {expression}")
+        result = eval(expression)  # noqa: S307 - demo only with sanitized input
+        return f"Result: {result}"
+    return f"Error: Invalid expression '{expression}'"
 
 
 # =============================================================================
-# Demo: Tool Call with Context Manager
-# =============================================================================
-
-
-def demo_tool_call_context_manager(handler: TelemetryHandler):
-    """Demonstrate the context manager pattern for tool calls.
-
-    This is the recommended approach - clean, handles errors automatically.
-    """
-    print("\n=== Demo: Tool Call Context Manager ===")
-
-    # Successful tool call
-    tool = ToolCall(
-        name="get_weather",
-        arguments={"location": "Paris"},
-        id="call_001",
-        tool_type="function",
-        tool_description="Get current weather for a location",
-    )
-
-    with handler.tool_call(tool) as tc:
-        # Execute the actual tool
-        result = get_weather(tc.arguments["location"])
-        tc.tool_result = result
-        print(f"Weather result: {result}")
-
-    # Tool call with error (exception auto-handled)
-    print("\nDemonstrating error handling...")
-    error_tool = ToolCall(
-        name="calculate",
-        arguments={"expression": "invalid_expr"},
-        id="call_002",
-        tool_type="function",
-    )
-
-    try:
-        with handler.tool_call(error_tool) as tc:
-            result = calculate(tc.arguments["expression"])
-            tc.tool_result = result
-    except ValueError as e:
-        print(f"Tool failed (expected): {e}")
-
-
-# =============================================================================
-# Demo: Nested Span Hierarchy (Workflow -> LLM -> Tool)
-# =============================================================================
-
-
-def demo_nested_hierarchy(handler: TelemetryHandler):
-    """Demonstrate proper span nesting: agent -> llm -> tool calls.
-
-    This shows how tool calls appear as children of the LLM span that
-    triggered them, all within an agent/workflow span.
-    """
-    print("\n=== Demo: Nested Span Hierarchy ===")
-
-    # Simulated LLM response with tool calls
-    mock_tool_calls = [
-        ToolCallRequest(
-            name="get_weather", arguments={"location": "Tokyo"}, id="call_100"
-        ),
-        ToolCallRequest(
-            name="calculate", arguments={"expression": "25 * 4"}, id="call_101"
-        ),
-    ]
-
-    # Create a root span to represent the agent/workflow
-    # (In a real app, this might come from a workflow handler or framework)
-    tracer = trace.get_tracer(__name__)
-
-    with tracer.start_as_current_span(
-        "invoke_agent SimpleAgent"
-    ) as agent_span:
-        agent_span.set_attribute("gen_ai.operation.name", "invoke_agent")
-        print("Started agent: SimpleAgent")
-
-        # Create LLM span
-        llm = LLMInvocation(
-            request_model="gpt-4",
-            provider="openai",
-        )
-
-        with handler.llm(llm) as llm_inv:
-            print("  LLM call: gpt-4")
-
-            # Simulate LLM deciding to call tools
-            llm_inv.output_messages = [
-                OutputMessage(
-                    role="assistant",
-                    parts=[
-                        Text("I'll check the weather and do a calculation."),
-                    ],
-                    finish_reason="tool_calls",
-                )
-            ]
-
-            # Execute each tool call as child span
-            for tool_request in mock_tool_calls:
-                tool = ToolCall(
-                    name=tool_request.name,
-                    arguments=tool_request.arguments,
-                    id=tool_request.id,
-                    tool_type="function",
-                )
-
-                with handler.tool_call(tool) as tc:
-                    print(f"    Executing tool: {tc.name}")
-                    if tc.name == "get_weather":
-                        tc.tool_result = get_weather(tc.arguments["location"])
-                    elif tc.name == "calculate":
-                        tc.tool_result = calculate(tc.arguments["expression"])
-                    print(f"    Result: {tc.tool_result}")
-
-    print("Agent completed")
-
-
-# =============================================================================
-# Main
+# Main Demo
 # =============================================================================
 
 
 def main():
-    print("OpenTelemetry GenAI Tool Call Demo")
+    print("OpenTelemetry LangChain Tool Call Demo")
     print("=" * 40)
 
     # Set up OpenTelemetry
     setup_telemetry()
 
-    # Get the telemetry handler
-    handler = TelemetryHandler()
+    # Instrument LangChain - pass providers explicitly to avoid singleton issues
+    LangChainInstrumentor().instrument(
+        tracer_provider=trace.get_tracer_provider(),
+    )
 
-    # Run demos
-    demo_tool_call_context_manager(handler)
-    demo_nested_hierarchy(handler)
+    # Create LLM with tools bound
+    llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
+    tools = [get_weather, calculate]
+    llm_with_tools = llm.bind_tools(tools)
+
+    # Create a query that should trigger tool use
+    print("\nSending query: 'What is the weather in Paris?'")
+    messages = [HumanMessage(content="What is the weather in Paris?")]
+
+    # Get tracer for agent span
+    tracer = trace.get_tracer(__name__)
+
+    # Wrap the entire agent loop in a parent span
+    # This ensures LLM and tool calls share the same trace
+    with tracer.start_as_current_span("agent_workflow") as agent_span:
+        agent_span.set_attribute("gen_ai.operation.name", "invoke_agent")
+
+        # Invoke the LLM - this creates a chat span (child of agent_workflow)
+        response = llm_with_tools.invoke(messages)
+        print(f"LLM Response: {response.content}")
+
+        # Check if the LLM wants to call tools
+        if response.tool_calls:
+            print(f"\nTool calls requested: {len(response.tool_calls)}")
+
+            for tool_call in response.tool_calls:
+                print(f"  - {tool_call['name']}({tool_call['args']})")
+
+                # Execute the tool - creates execute_tool span (child of agent_workflow)
+                tool_func = {
+                    "get_weather": get_weather,
+                    "calculate": calculate,
+                }[tool_call["name"]]
+                result = tool_func.invoke(tool_call["args"])
+                print(f"    Result: {result}")
+        else:
+            print("\nNo tool calls in response (LLM answered directly)")
+
+    # Clean up
+    LangChainInstrumentor().uninstrument()
+
+    # Force flush spans before exit (BatchSpanProcessor buffers them)
+    trace.get_tracer_provider().force_flush()
 
     print("\n" + "=" * 40)
     print("Demo complete! Check your OTLP endpoint for traces.")
-    print("Expected span hierarchy:")
-    print("  invoke_agent SimpleAgent")
-    print("  └── chat gpt-4")
-    print("      ├── execute_tool get_weather")
-    print("      └── execute_tool calculate")
+    print("\nExpected span hierarchy:")
+    print("  agent_workflow")
+    print("  ├── chat gpt-4o-mini")
+    print("  └── execute_tool get_weather")
 
 
 if __name__ == "__main__":
